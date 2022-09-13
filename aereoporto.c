@@ -8,18 +8,32 @@ const char* getTime();
 
 int main() {
 	pid_t pid, hangar, torre, aereo[10];
-	printf("\n  TEMPO   | PID | EVENTO\n");
+	printf("\n  TEMPO   |   PID   | EVENTO\n");
 	if((pid = fork()) < 0) {
-		fprintf(stderr, "Errore nella creazione di altri processi!\n");
+		fprintf(stderr, "Errore nella creazione del processo hangar!\n");
 		return 1;
 	}
 	else if(pid == 0) {	// Processo figlio
 		hangar = getpid();
-		printf("%s| %d| hangar creato\n", getTime(), hangar);
+		printf("%s|  %d  | Hangar creato\n", getTime(), hangar);
+		for(int i = 0; i < 10; i++) {
+			sleep(2);
+			if((aereo[i] = fork()) < 0) {
+				fprintf(stderr, "Errore nella creazione del processo Aereo %d!\n", i+1);
+				return 1;
+			}
+			else if(aereo[i] == 0) {
+				printf("%s|  %d  | creato Aereo %d\n", getTime(), getpid(), i+1);
+				return 0;
+			}
+		}
+		for(int i = 0; i < 10; i++) {
+			wait(NULL);
+		}
 	}
 	else {	// Processo padre
 		torre = getpid();
-		printf("%s| %d| torre creata\n", getTime(), torre);
+		printf("%s|  %d  | Torre di controllo avviata\n", getTime(), torre);
 	}
     return 0;
 }
