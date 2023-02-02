@@ -8,15 +8,17 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <errno.h>
-#include <signal.h>
 #include <semaphore.h>
+#include <signal.h>
 
-#define NUM_AEREI 4
+#define NUM_AEREI 10
 
 struct aereo {
 	pid_t id;	// PID processo aereo
 	int nome;	// Ordine di quando è stato creato
 };
+
+//void handler(int segnale) {}
 
 // Funzioni generiche utili
 const char* getTime();
@@ -24,13 +26,15 @@ int getRandomSec(int, int);
 
 int main() {
 	struct aereo aerei[NUM_AEREI];
+	//struct sigaction sa = {0};
 	sem_t *pista;
-	int tempoPreparazione = 0, tempoDecollo = 0, coda[NUM_AEREI], status, autorizzato;
-	int fd[2]; // Aereo => Torre
-	int fd1[2]; // Torre => Aereo
-	int fd2[2]; // Hangar => Torre
-	pid_t hangar, torre;	// Dichiarazioni variabili di tipo pid_t per i PID dei nostri processi
+	int tempoPreparazione = 0, tempoDecollo = 0, coda[NUM_AEREI], status;
+	int fd[2];
+	int fd1[2];
+	int fd2[2];
+	pid_t hangar, torre, autorizzato;	// Dichiarazioni variabili di tipo pid_t per i PID dei nostri processi
 	pista = sem_open("pista", O_CREAT, 0644, 2);	// La pista non è altro che un semaforo named
+	//sa.sa_handler = &handler;
 	if(pipe(fd) == -1) {	// Creo le seguenti pipe per far comunicare i processi
 		fprintf(stderr, "Errore nella creazione della pipe!\n");
 		return -1;
@@ -70,22 +74,18 @@ int main() {
 					return -1;
 				}
 				close(fd[1]);
-				if(read(fd1[0], &autorizzato, sizeof(int)) == -1) {
+				if(read(fd1[0], &autorizzato, sizeof(pid_t)) == -1) {
 					fprintf(stderr, "Errore comunicazione tra i processi 2 aereo\n");
 					return -1;
 				}
 				close(fd1[0]);
-				if (autorizzato == aerei[i].nome) {
+				if(autorizzato == aerei[i].id) {
 					sem_wait(pista);
 					tempoDecollo = getRandomSec(5, 15);
-					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d sta decollando... tempo stimato %d secondi\n", getTime(), getpid(), autorizzato+1, tempoDecollo);
+					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d sta decollando... tempo stimato %d secondi\n", getTime(), getpid(), aerei[i].nome+1, tempoDecollo);
 					sleep(tempoDecollo);
-					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d notifica la torre che ha liberato la pista\n", getTime(), getpid(), autorizzato+1);
-					if(write(fd2[1],&aerei[i].nome, sizeof(int)) == -1) {
-						fprintf(stderr, "Errore comunicazione tra i processi 3 aereo\n");
-						return -1;
-					}
-					close(fd2[1]);
+					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d notifica la torre che ha liberato la pista\n", getTime(), getpid(), aerei[i].nome+1);
+					sem_post(pista);
 				}
 				return 0;
 			}
@@ -95,7 +95,7 @@ int main() {
 		for(int i = 0; i < NUM_AEREI; i++) {	// Hangar attende che tutti i processi figli aereo terminino
 			waitpid(aerei[i].id,&status,0);
 		}
-		// OOO Qua va la notifica alla torre che gli aerei sono terminati dopodiché hangar termina
+		//kill(torre, SIGUSR1);
 		return 0;
 	}
 	else {	// Processo padre Torre
@@ -110,22 +110,23 @@ int main() {
 		}
 		close(fd[0]);
 		for(int i = 0; i < NUM_AEREI; i++) {
-			autorizzato = coda[i];
-			if(write(fd1[1], &autorizzato, sizeof(int)) == -1) {
+			autorizzato = aerei[coda[i]].id;
+			if(write(fd1[1], &autorizzato, sizeof(pid_t)) == -1) {
 				fprintf(stderr, "Errore comunicazione tra i processi 2 torre\n");
 				return -1;
 			}
-			printf("%s|  \033[1;31m%d\033[0m   | Torre da' l'autorizzazione per il decollo all'aereo %d\n", getTime(), getpid(), autorizzato+1);
-			if(read(fd2[0], &autorizzato, sizeof(int)) == -1) {
-				fprintf(stderr, "Errore comunicazione tra i processi 3 torre\n");
-				return -1;
-			}
-			printf("%s|  \033[1;31m%d\033[0m   | Torre da' libera una pista di decollo\n", getTime(), getpid());
-			sem_post(pista);
+			printf("%s|  \033[1;31m%d\033[0m   | Torre da' l'autorizzazione per il decollo all'aereo %d\n", getTime(), getpid(), coda[i]+1);
+			//sem_wait(pista);
+			//if(read(fd2[0], &autorizzato, sizeof(int)) == -1) {
+			//	fprintf(stderr, "Errore comunicazione tra i processi 3 torre\n");
+			//	return -1;
+			//}
+			//sem_post(pista);
+			//printf("%s|  \033[1;31m%d\033[0m   | Torre da' libera una pista di decollo\n", getTime(), getpid());
 		}
 		close(fd1[1]);
-		close(fd2[0]);
-		wait(NULL);
+		//close(fd2[0]);
+		waitpid(hangar,&status,0);
 		sem_close(pista);
 		sem_unlink("pista");
 		return 0;
@@ -143,6 +144,6 @@ const char* getTime() {
 }
 
 int getRandomSec(int secondiMin, int secondiMax) {	// Funzione che genera un numero pseudorandomico
-	srand(time(NULL));	// Inizializzo il seme per la generazione di futuri numeri pseudorandomici
+	srand(getpid());	// Inizializzo il seme per la generazione di futuri numeri pseudorandomici
 	return ((rand() % (secondiMax - secondiMin + 1)) + secondiMin);
 }
