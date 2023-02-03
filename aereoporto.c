@@ -18,32 +18,30 @@ struct aereo {
 	int nome;	// Ordine di quando è stato creato
 };
 
-//void handler(int segnale) {}
-
 // Funzioni generiche utili
 const char* getTime();
 int getRandomSec(int, int);
 
 int main() {
-	struct aereo aerei[NUM_AEREI];
-	//struct sigaction sa = {0};
-	sem_t *pista;
-	int tempoPreparazione = 0, tempoDecollo = 0, coda[NUM_AEREI], status;
-	int fd[2];
-	int fd1[2];
-	int fd2[2];
+	struct aereo aerei[NUM_AEREI];	// Vettore contenente le strutture dati di tipo aereo
+	struct sigaction sa;			// Struttura dati per i segnali
+	sem_t *pista;					// semaforo
+	sigset_t sigset;
+	int tempoPreparazione = 0, tempoDecollo = 0, coda[NUM_AEREI], status, segnale;
+	int fd[2];	// Aereo ==> Torre
+	int fd1[2];	// Torre ==> Aereo
 	pid_t hangar, torre, autorizzato;	// Dichiarazioni variabili di tipo pid_t per i PID dei nostri processi
 	pista = sem_open("pista", O_CREAT, 0644, 2);	// La pista non è altro che un semaforo named
-	//sa.sa_handler = &handler;
+	memset(&sa, '\0', sizeof(struct sigaction));
+	sigaction(SIGRTMIN + 1, &sa, NULL);
+	sigemptyset(&sigset);
+	sigaddset(&sigset, SIGRTMIN + 1);	// Maschero il signal
+	sigprocmask(SIG_BLOCK, &sigset, NULL);
 	if(pipe(fd) == -1) {	// Creo le seguenti pipe per far comunicare i processi
 		fprintf(stderr, "Errore nella creazione della pipe!\n");
 		return -1;
 	}
 	if(pipe(fd1) == -1) {
-		fprintf(stderr, "Errore nella creazione della pipe!\n");
-		return -1;
-	}
-	if(pipe(fd2) == -1) {
 		fprintf(stderr, "Errore nella creazione della pipe!\n");
 		return -1;
 	}
@@ -70,22 +68,22 @@ int main() {
 				printf("%s|  \033[1;33m%d\033[0m   | Aereo %d invia richiesta di decollo alla torre\n", getTime(), getpid(), i+1);
 				// L'aereo ha finito di prepararsi e ora invia la richiesta di decollo alla torre
 				if(write(fd[1],&aerei[i].nome, sizeof(int)) == -1) {
-					fprintf(stderr, "Errore comunicazione tra i processi 1 aereo\n");
+					fprintf(stderr, "Errore comunicazione tra i processi\n");
 					return -1;
 				}
 				close(fd[1]);
-				if(read(fd1[0], &autorizzato, sizeof(pid_t)) == -1) {
-					fprintf(stderr, "Errore comunicazione tra i processi 2 aereo\n");
+				if(read(fd1[0], &autorizzato, sizeof(pid_t)) == -1) {	// Aereo rimane in ascolto per l'autorizzazione dalla torre
+					fprintf(stderr, "Errore comunicazione tra i processi\n");
 					return -1;
 				}
 				close(fd1[0]);
-				if(autorizzato == aerei[i].id) {
-					sem_wait(pista);
+				if(autorizzato == aerei[i].id) {	// L'aereo autorizzato procede al decollo su una pista libera
+					sem_wait(pista);				// se almeno una delle due piste non è libera aspetta
 					tempoDecollo = getRandomSec(5, 15);
 					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d sta decollando... tempo stimato %d secondi\n", getTime(), getpid(), aerei[i].nome+1, tempoDecollo);
 					sleep(tempoDecollo);
-					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d notifica la torre che ha liberato la pista\n", getTime(), getpid(), aerei[i].nome+1);
-					sem_post(pista);
+					printf("%s|  \033[1;33m%d\033[0m   | Aereo %d ha liberato la pista\n", getTime(), getpid(), aerei[i].nome+1);
+					sem_post(pista);				// L'aereo libera la pista
 				}
 				return 0;
 			}
@@ -95,15 +93,17 @@ int main() {
 		for(int i = 0; i < NUM_AEREI; i++) {	// Hangar attende che tutti i processi figli aereo terminino
 			waitpid(aerei[i].id,&status,0);
 		}
-		//kill(torre, SIGUSR1);
+		kill(torre, SIGRTMIN + 1);	// Invio signal SIGRTMIN + 1 alla torre per la terminazione
+		waitpid(torre,&status,0);
+		printf("%s|  \e[1;91m%d\033[0m   | Processo hangar notifica torre e termina\n", getTime(), getpid());
 		return 0;
 	}
 	else {	// Processo padre Torre
 		torre = getpid();
 		printf("%s|  \033[1;31m%d\033[0m   | Torre di controllo avviata\n", getTime(), getpid());
 		for(int i = 0; i < NUM_AEREI; i++) {
-			if(read(fd[0], &coda[i], sizeof(int)) == -1) {
-				fprintf(stderr, "Errore comunicazione tra i processi 1 torre\n");
+			if(read(fd[0], &coda[i], sizeof(int)) == -1) {	// Torre rimane in ascolto per le richieste
+				fprintf(stderr, "Errore comunicazione tra i processi\n");
 				return -1;
 			}
 			printf("%s|  \033[1;31m%d\033[0m   | Torre ha ricevuto la richiesta di decollo dall'aereo %d\n", getTime(), getpid(), coda[i]+1);
@@ -111,22 +111,15 @@ int main() {
 		close(fd[0]);
 		for(int i = 0; i < NUM_AEREI; i++) {
 			autorizzato = aerei[coda[i]].id;
-			if(write(fd1[1], &autorizzato, sizeof(pid_t)) == -1) {
-				fprintf(stderr, "Errore comunicazione tra i processi 2 torre\n");
+			if(write(fd1[1], &autorizzato, sizeof(pid_t)) == -1) {	// Torre autorizza gli aerei
+				fprintf(stderr, "Errore comunicazione tra i processi\n");	//  in base all'ordine delle richieste inoltrate
 				return -1;
 			}
 			printf("%s|  \033[1;31m%d\033[0m   | Torre da' l'autorizzazione per il decollo all'aereo %d\n", getTime(), getpid(), coda[i]+1);
-			//sem_wait(pista);
-			//if(read(fd2[0], &autorizzato, sizeof(int)) == -1) {
-			//	fprintf(stderr, "Errore comunicazione tra i processi 3 torre\n");
-			//	return -1;
-			//}
-			//sem_post(pista);
-			//printf("%s|  \033[1;31m%d\033[0m   | Torre da' libera una pista di decollo\n", getTime(), getpid());
 		}
 		close(fd1[1]);
-		//close(fd2[0]);
-		waitpid(hangar,&status,0);
+		sigwait(&sigset, &segnale);
+		printf("%s|  \033[1;31m%d\033[0m   | Processo torre riceve notifica da hangar e termina\n", getTime(), getpid());
 		sem_close(pista);
 		sem_unlink("pista");
 		return 0;
